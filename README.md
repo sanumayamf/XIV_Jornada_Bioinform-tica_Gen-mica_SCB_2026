@@ -1,1 +1,1 @@
-# XIV_Jornada_Bioinform-tica-Gen-mica_SJB_2026
+# XIV_Jornada_Bioinform-tica-Gen-mica_SCB_2026
