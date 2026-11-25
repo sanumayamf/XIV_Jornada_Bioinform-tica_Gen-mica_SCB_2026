@@ -1,0 +1,399 @@
+---
+title: "Mouse endogenous retroviruses exhibit higher protein-domain HMM coverage than humans"
+author: "Sanu Maya Montalbán Ferrer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# 0. Setup
+
+## Libraries
+```{r libraries}
+library(tidyverse)   # includes dplyr, readr, ggplot2, tidyr, stringr, forcats
+library(ggpubr)      # theme_pubr(), get_legend()
+library(patchwork)   # to combine the panels of Figure 2
+```
+
+## Data loading
+```{r data_loading}
+# BED files: one row = one ERV insertion (locus)
+bed_cols <- c("chrom", "start", "end", "name", "strand")
+
+h_internal_regions <- read_tsv("data/HERV_internal_v5.bed",
+                               col_names = bed_cols, col_types = "ciicdc")
+m_internal_regions <- read_tsv("data/ERV_mouse_internal.bed",
+                               col_names = bed_cols, col_types = "ciicdc")
+
+# TSV files: one row = one protein-domain hit
+h_loci_domains <- read_tsv("data/HERV_loci_annotated_domains.tsv")
+m_loci_domains <- read_tsv("data/ERV_mouse_loci_annotated_domain.tsv")
+```
+
+## Constants
+* Fixed values for the whole document. If you change one, all figures are updated.
+```{r constants}
+species_colours   <- c("Human" = "#0B2545", "Mouse" = "#5B8DB8")
+canonical_domains <- c("AP", "DUT", "ENV", "GAG", "INT", "RNaseH", "RT")  # 7 types
+high_threshold    <- 0.70   # coverage above which a hit is considered "highly preserved"
+```
+
+## Shared tables
+* `coverage_all`: all domain hits from both species (Figure 2, panel A).
+* `hits_typed`: only the hits from the 7 canonical domain types. Columns:
+  * Species: Human or Mouse.
+  * Coverage: fraction of the domain model covered by the hit.
+  * Token: the text before the first "_" in the domain name (e.g. GAG_betaretroviridae -> GAG).
+  * Domain_type: the matching canonical type. Names that don't match (such as GAGCOAT_... or ORFQ_...) become NA and are removed.
+
+```{r common_tables}
+coverage_all <- bind_rows(
+  h_loci_domains %>% select(Coverage) %>% mutate(Species = "Human"),
+  m_loci_domains %>% select(Coverage) %>% mutate(Species = "Mouse")
+) %>%
+  filter(!is.na(Coverage))
+
+hits_typed <- bind_rows(
+  h_loci_domains %>% select(Domain, Coverage) %>% mutate(Species = "Human"),
+  m_loci_domains %>% select(Domain, Coverage) %>% mutate(Species = "Mouse")
+) %>%
+  filter(!is.na(Coverage)) %>%
+  mutate(
+    Token = str_extract(Domain, "^[^_]+"),
+    Domain_type = canonical_domains[match(toupper(Token), toupper(canonical_domains))]
+  ) %>%
+  filter(!is.na(Domain_type)) %>%
+  mutate(Domain_type = factor(Domain_type, levels = canonical_domains))
+```
+
+# 1. Figures
+
+## Figure 1: overview of the human and mouse ERV landscapes
+* The figure itself is made in Canva. This chunk computes the numbers shown in it
+  (number of ERV loci and number of domain hits per species).
+
+```{r fig1_numbers}
+fig1_numbers <- tibble(
+  Species     = c("Human", "Mouse"),
+  n_loci      = c(n_distinct(h_internal_regions$name), n_distinct(m_internal_regions$name)),
+  n_hits      = c(nrow(h_loci_domains), nrow(m_loci_domains))
+) %>%
+  mutate(hits_per_locus = n_hits / n_loci)
+
+print(fig1_numbers)
+```
+
+## Figure 2: domain coverage distribution
+* Panel A: coverage distribution of all domain hits.
+* Panel B: one panel per canonical domain type. Only the bottom row
+  (DUT, ENV and RNaseH) shows the x-axis percentages.
+
+```{r fig2}
+# Panel A: general coverage
+pA <- ggplot(coverage_all, aes(x = Coverage, fill = Species)) +
+  geom_density(alpha = 0.5, colour = NA) +
+  scale_fill_manual(values = species_colours) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = NULL, y = "Density") +
+  theme_pubr(base_size = 22) +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_text(size = 25),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+  )
+
+# Domain panels
+# show_x_labels = TRUE  -> shows the % numbers on the x-axis (bottom row)
+# show_x_labels = FALSE -> keeps the tick marks but hides the numbers (top rows)
+make_domain_plot <- function(d, show_x_labels = FALSE) {
+  x_text <- if (show_x_labels) {
+    element_text(angle = 45, hjust = 1, vjust = 1, size = 21)
+  } else {
+    element_blank()
+  }
+
+  hits_typed %>%
+    filter(Domain_type == d) %>%
+    ggplot(aes(x = Coverage, fill = Species)) +
+    geom_density(alpha = 0.5, colour = NA) +
+    scale_fill_manual(values = species_colours) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+    labs(title = d, x = NULL, y = NULL) +
+    theme_pubr(base_size = 18) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 21),
+      axis.text.x = x_text
+    )
+}
+
+# Top rows: no % numbers (tick marks are kept)
+pAP     <- make_domain_plot("AP")
+pGAG    <- make_domain_plot("GAG")
+pINT    <- make_domain_plot("INT")
+pRT     <- make_domain_plot("RT")
+
+# Bottom row: % numbers shown
+pDUT    <- make_domain_plot("DUT", show_x_labels = TRUE)
+# ENV: fixed breaks so it starts at 25%, like DUT and RNaseH
+# (R shows a message saying the x scale is replaced; this is expected)
+pENV    <- make_domain_plot("ENV", show_x_labels = TRUE) +
+  scale_x_continuous(breaks = c(0.25, 0.5, 0.75, 1),
+                     labels = scales::percent_format(accuracy = 1))
+pRNaseH <- make_domain_plot("RNaseH", show_x_labels = TRUE)
+
+# Legend, extracted so it can sit next to the AP panel
+legend_plot <- ggplot(hits_typed, aes(x = Coverage, fill = Species)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = species_colours) +
+  theme_pubr(base_size = 12) +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 23),
+    legend.key.size = grid::unit(1.3, "cm")
+  )
+
+leg <- wrap_elements(full = get_legend(legend_plot))
+
+# Shared x-axis title, centred below the whole grid
+x_title <- ggplot() +
+  annotate("text", x = 0.5, y = 0.5, size = 8.6,
+           label = "Domain alignment coverage (% of full model)") +
+  xlim(0, 1) + ylim(0, 1) +
+  theme_void()
+
+# Letters follow the order of the plots:
+# A = pA, B = pAP, C = leg, D = pGAG, E = pINT, F = pRT,
+# G = pDUT, H = pENV, I = pRNaseH
+design <- "
+ABCC
+ABCC
+ABCC
+ADEF
+ADEF
+ADEF
+AGHI
+AGHI
+AGHI
+"
+
+grid_plot <- pA + pAP + leg + pGAG + pINT + pRT +
+  pDUT + pENV + pRNaseH +
+  plot_layout(design = design, widths = c(2, 0.9, 0.9, 0.9))
+
+fig2_p1 <- grid_plot / x_title + plot_layout(heights = c(20, 1))
+
+fig2_p1
+
+dir.create("figures", showWarnings = FALSE)
+
+ggsave("figures/poster1_fig2_coverage.pdf", fig2_p1,
+       width = 23, height = 11, device = cairo_pdf)
+
+ggsave("figures/poster1_fig2_coverage.png", fig2_p1,
+       width = 23, height = 11, dpi = 300)
+```
+
+### Figure 2 numbers (for the poster text)
+* Median, quartiles and proportion of hits with ≥70% and 100% coverage, per species.
+
+```{r fig2_numbers}
+coverage_summary <- coverage_all %>%
+  group_by(Species) %>%
+  summarise(
+    n = n(),
+    median = median(Coverage),
+    mean = mean(Coverage),
+    q25 = quantile(Coverage, 0.25),
+    q75 = quantile(Coverage, 0.75),
+    pct_ge_70 = mean(Coverage >= high_threshold),
+    n_100 = sum(Coverage >= 0.999),
+    pct_100 = mean(Coverage >= 0.999),
+    .groups = "drop"
+  )
+
+print(coverage_summary)
+```
+
+## Figure 3: fraction of highly preserved domain hits
+* A hit is considered "highly preserved" if its coverage is >= `high_threshold` (70%).
+* Bars: for each domain type, the fraction of hits with coverage >= threshold, human vs mouse.
+
+```{r fig3}
+fraction_by_type <- hits_typed %>%
+  group_by(Species, Domain_type) %>%
+  summarise(
+    n_hits = n(),
+    n_high = sum(Coverage >= high_threshold),
+    fraction = n_high / n_hits,
+    .groups = "drop"
+  )
+
+print(fraction_by_type, n = 20)
+
+p3_p1 <- ggplot(fraction_by_type,
+                aes(x = Domain_type, y = fraction, fill = Species)) +
+  geom_col(position = position_dodge(width = 0.9), width = 0.85, alpha = 0.9) +
+  geom_text(aes(label = scales::percent(fraction, accuracy = 1)),
+            position = position_dodge(width = 0.9),
+            vjust = -0.4, size = 4.5, colour = "grey20") +
+  scale_fill_manual(values = species_colours) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     breaks = seq(0, 1, by = 0.2),
+                     limits = c(0, 0.85), expand = c(0, 0)) +
+  labs(x = "Domain type",
+       y = paste0("Fraction of domain hits with coverage ≥ ", high_threshold * 100, "%"),
+       fill = NULL) +
+  theme_pubr(base_size = 16) +
+  theme(legend.position = "top")
+
+p3_p1
+
+dir.create("figures", showWarnings = FALSE)
+
+ggsave("figures/poster1_fig3_highly_preserved.pdf", p3_p1,
+       width = 9, height = 6, device = cairo_pdf)
+
+ggsave("figures/poster1_fig3_highly_preserved.png", p3_p1,
+       width = 9, height = 6, dpi = 300)
+```
+
+## Figure 4: effect size across domains
+
+### Cliff's delta calculation
+* Cliff's delta ranges from -1 to 1: it is the probability that a mouse hit has higher
+  coverage than a human hit, minus the probability of the opposite. 0 = no difference.
+* The 95% confidence interval is estimated by bootstrap (300 resamples).
+  This is the slowest part of the document.
+
+```{r cliff_delta}
+set.seed(1)
+
+# Cliff's delta: x = mouse, y = human.
+# wilcox.test() gives W = pairs with x > y, plus half the ties.
+cliff_delta <- function(x, y) {
+  W <- suppressWarnings(wilcox.test(x, y, exact = FALSE)$statistic)
+  unname(2 * W / (length(x) * length(y)) - 1)
+}
+
+cliff_results <- hits_typed %>%
+  group_by(Domain_type) %>%
+  group_modify(~{
+    mouse <- .x$Coverage[.x$Species == "Mouse"]
+    human <- .x$Coverage[.x$Species == "Human"]
+
+    # Bootstrap: resample each group with replacement 300 times.
+    boot <- replicate(300, {
+      cliff_delta(sample(mouse, replace = TRUE), sample(human, replace = TRUE))
+    })
+
+    tibble(
+      delta = cliff_delta(mouse, human),
+      ci_low = unname(quantile(boot, 0.025)),
+      ci_high = unname(quantile(boot, 0.975)),
+      n_mouse = length(mouse),
+      n_human = length(human)
+    )
+  }) %>%
+  ungroup()
+
+print(cliff_results)
+```
+
+### Figure 4A: lollipop plot (Cliff's delta)
+
+* For each domain type, a "stick" from 0 to the Cliff's delta value, with a point at the end.
+* The colour shows the direction of the difference: if delta is positive, mouse has higher coverage (mouse colour); if negative, human has higher coverage (human colour).
+* The thin grey line through the point is the 95% confidence interval (bootstrap from the previous chunk).
+
+```{r fig4a_lollipop_cliff}
+# ------------------------------------------------------------------
+# STEP 1: prepare the data
+#   - direction: which species has higher coverage, to colour the lollipop
+#   - Domain_type ordered by delta, so the plot is sorted
+# ------------------------------------------------------------------
+cliff_lollipop <- cliff_results %>%
+  mutate(direction   = if_else(delta > 0, "Mouse higher", "Human higher"),
+         Domain_type = fct_reorder(Domain_type, delta))
+
+# Colours: one per species (species_colours, defined at the start)
+direction_colours <- c("Mouse higher" = species_colours[["Mouse"]],
+                       "Human higher" = species_colours[["Human"]])
+
+# ------------------------------------------------------------------
+# STEP 2: the plot
+#   geom_segment()   draws the "stick" (from x = 0 to x = delta)
+#   geom_errorbarh() draws the confidence interval (thin grey line)
+#   geom_point()     draws the point at the end of the stick
+#   geom_text()      writes the delta value after the confidence interval
+#                    (to the right if positive, to the left if negative)
+#   No legend: the meaning of the colour is explained on the x-axis.
+# ------------------------------------------------------------------
+p4a_lollipop <- ggplot(cliff_lollipop, aes(x = delta, y = Domain_type, colour = direction)) +
+  geom_vline(xintercept = 0, colour = "grey50") +
+  geom_segment(aes(x = 0, xend = delta, yend = Domain_type), linewidth = 1.5) +
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high), height = 0, linewidth = 0.5,
+                 colour = "grey40") +
+  geom_point(size = 6) +
+  geom_text(aes(x     = if_else(delta > 0, ci_high, ci_low),
+                label = sprintf("%.2f", delta),
+                hjust = if_else(delta > 0, -0.6, 1.6)),
+            size = 5.6, colour = "grey20") +
+  scale_colour_manual(values = direction_colours, guide = "none") +
+  scale_x_continuous(expand = expansion(mult = c(0.05, 0.15))) +   # space for the labels
+  labs(x = "Effect size (Cliff's delta)\npositive = higher domain coverage in mouse",
+       y = "Domain type") +
+  theme_pubr(base_size = 19) +
+  theme(panel.grid.major.y = element_line(colour = "grey92"))
+
+p4a_lollipop
+
+dir.create("figures", showWarnings = FALSE)
+ggsave("figures/poster1_fig4a_cliff_lollipop.pdf", p4a_lollipop, width = 9, height = 6, device = cairo_pdf)
+ggsave("figures/poster1_fig4a_cliff_lollipop.png", p4a_lollipop, width = 9, height = 6, dpi = 300)
+```
+
+### Figure 4B: shift map (percentage points)
+* For each domain type, the difference between the fraction of highly preserved hits
+  (>= 70%) in mouse and in human.
+
+```{r fig4b_shift_map}
+shift_map <- hits_typed %>%
+  group_by(Domain_type, Species) %>%
+  summarise(fraction = mean(Coverage >= high_threshold), .groups = "drop") %>%
+  pivot_wider(names_from = Species, values_from = fraction) %>%
+  mutate(shift = Mouse - Human)
+
+p4b <- ggplot(shift_map,
+              aes(x = "Mouse - Human",
+                  y = fct_reorder(Domain_type, shift),
+                  fill = shift)) +
+  geom_tile(colour = "white", linewidth = 1, width = 0.6) +
+  geom_text(aes(label = sprintf("%+.1f pp", 100 * shift)),
+            size = 6.1, colour = "grey10") +
+  scale_fill_gradient2(
+    low = "#0B2545", mid = "white", high = "#5B8DB8", midpoint = 0,
+    guide = "none"
+  ) +
+  labs(x = NULL, y = "Domain type") +
+  theme_pubr(base_size = 19) +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+p4b
+
+dir.create("figures", showWarnings = FALSE)
+ggsave("figures/poster1_fig4b_shift_map.pdf", p4b, width = 5, height = 6, device = cairo_pdf)
+ggsave("figures/poster1_fig4b_shift_map.png", p4b, width = 5, height = 6, dpi = 300)
+```
